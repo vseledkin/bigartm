@@ -1,6 +1,8 @@
-// Copyright 2014, Additive Regularization of Topic Models.
+// Copyright 2017, Additive Regularization of Topic Models.
 
 #include "artm_tests/api.h"
+
+#include "google/protobuf/util/json_util.h"
 
 namespace artm {
 namespace test {
@@ -9,10 +11,27 @@ inline char* StringAsArray(std::string* str) {
   return str->empty() ? NULL : &*str->begin();
 }
 
+static void ParseMessageFromString(const std::string& string, google::protobuf::Message* message) {
+  if (ArtmProtobufMessageFormatIsJson()) {
+    ::google::protobuf::util::JsonStringToMessage(string, message);
+  } else {
+    message->ParseFromString(string);
+  }
+}
+
+static void SerializeMessageToString(const google::protobuf::Message& message, std::string* output) {
+  if (ArtmProtobufMessageFormatIsJson()) {
+    ::google::protobuf::util::MessageToJsonString(message, output);
+  } else {
+    output->clear();
+    message.SerializeToString(output);
+  }
+}
+
 template<typename ArgsT, typename FuncT>
 int ArtmExecute(int master_id, const ArgsT& args, FuncT func) {
   std::string blob;
-  args.SerializeToString(&blob);
+  SerializeMessageToString(args, &blob);
   return HandleErrorCode(func(master_id, blob.size(), StringAsArray(&blob)));
 }
 
@@ -25,7 +44,7 @@ ResultT ArtmRequest(int master_id, const ArgsT& args, FuncT func) {
   HandleErrorCode(ArtmCopyRequestedMessage(length, StringAsArray(&result_blob)));
 
   ResultT result;
-  result.ParseFromString(result_blob);
+  ParseMessageFromString(result_blob, &result);
   return result;
 }
 
@@ -37,12 +56,14 @@ TopicModel Api::AttachTopicModel(const AttachModelArgs& args, Matrix* matrix) {
   TopicModel retval = master_model_.GetTopicModel(topic_args);
 
   std::string args_blob;
-  args.SerializeToString(&args_blob);
+  SerializeMessageToString(args, &args_blob);
 
-  if (retval.num_topics() == 0)
+  if (retval.num_topics() == 0) {
     throw ArgumentOutOfRangeException("Unable to attach to topic model with zero topics");
-  if (retval.token_size() == 0)
+  }
+  if (retval.token_size() == 0) {
     throw ArgumentOutOfRangeException("Unable to attach to topic model with zero tokens");
+  }
 
   matrix->resize(retval.token_size(), retval.num_topics());
   int address_length = matrix->no_columns() * matrix->no_rows() * sizeof(float);
@@ -102,15 +123,18 @@ int Api::Duplicate(const DuplicateMasterComponentArgs& args) {
                                                   ::artm::InitializeModelArgs* initialize_model_args,
                                                   const ::artm::DictionaryData* dictionary_data) {
   ImportBatchesArgs import_args;
-  for (auto& batch : batches)
+  for (auto& batch : batches) {
     import_args.add_batch()->CopyFrom(*batch);
+  }
   master_model_.ImportBatches(import_args);
-  if (import_batches_args != nullptr)
+  if (import_batches_args != nullptr) {
     import_batches_args->CopyFrom(import_args);
+  }
 
   ::artm::FitOfflineMasterModelArgs fit_offline_args;
-  for (auto& batch : import_args.batch())
+  for (auto& batch : import_args.batch()) {
     fit_offline_args.add_batch_filename(batch.id());
+  }
 
   if (dictionary_data == nullptr) {
     ::artm::GatherDictionaryArgs gather_args;
@@ -127,8 +151,9 @@ int Api::Duplicate(const DuplicateMasterComponentArgs& args) {
   init_model_args.set_model_name(master_model_.config().pwt_name());
   init_model_args.mutable_topic_name()->CopyFrom(master_model_.config().topic_name());
   master_model_.InitializeModel(init_model_args);
-  if (initialize_model_args != nullptr)
+  if (initialize_model_args != nullptr) {
     initialize_model_args->CopyFrom(init_model_args);
+  }
 
   return fit_offline_args;
 }

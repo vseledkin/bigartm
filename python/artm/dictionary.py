@@ -1,3 +1,5 @@
+# Copyright 2017, Additive Regularization of Topic Models.
+
 import uuid
 import os
 import glob
@@ -76,14 +78,15 @@ class Dictionary(object):
     def save_text(self, dictionary_path, encoding='utf-8'):
         """
         :Description: saves the BigARTM dictionary of the collection on the disk\
-                      in the human readable text format
+                      in the human-readable text format
 
         :param str dictionary_path: full file name for the text dictionary file
         :param str encoding: an encoding of text in diciotnary
         """
         dictionary_data = self._master.get_dictionary(self._name)
         with codecs.open(dictionary_path, 'w', encoding) as fout:
-            fout.write(u'name: {}\n'.format(dictionary_data.name))
+            fout.write(u'name: {} num_items: {}\n'.format(dictionary_data.name,
+                                                          dictionary_data.num_items_in_collection))
             fout.write(u'token, class_id, token_value, token_tf, token_df\n')
 
             for i in range(len(dictionary_data.token)):
@@ -96,7 +99,7 @@ class Dictionary(object):
     def load_text(self, dictionary_path, encoding='utf-8'):
         """
         :Description: loads the BigARTM dictionary of the collection from the disk\
-                      in the human readable text format
+                      in the human-readable text format
 
         :param str dictionary_path: full file name of the text dictionary file
         :param str encoding: an encoding of text in diciotnary
@@ -104,7 +107,9 @@ class Dictionary(object):
         self._reset()
         dictionary_data = messages.DictionaryData()
         with codecs.open(dictionary_path, 'r', encoding) as fin:
-            dictionary_data.name = fin.readline().split(' ')[1][0: -1]
+            first_str = fin.readline()[: -1].split(' ')
+            dictionary_data.name = first_str[1]
+            dictionary_data.num_items_in_collection = int(first_str[3])
             fin.readline()  # skip comment line
 
             for line in fin:
@@ -133,10 +138,14 @@ class Dictionary(object):
                       represented as batches and load it in the lib
 
         :param str data_path: full path to batches folder
-        :param str cooc_file_path: full path to the file with cooc info
+        :param str cooc_file_path: full path to the file with cooc info. Cooc info is a file with three\
+                                   columns, first two a the zero-based indices of tokens in vocab file,\
+                                   and third one is a value of their co-occurrence in collection (or another)\
+                                   pairwise statistic.
         :param str vocab_file_path: full path to the file with vocabulary.\
                       If given, the dictionary token will have the same order, as in\
-                      this file, otherwise the order will be random
+                      this file, otherwise the order will be random.\
+                      If given, the tokens from batches, that are not presented in vocab, will be skipped.
         :param bool symmetric_cooc_values: if the cooc matrix should considered\
                       to be symmetric or not
         """
@@ -148,7 +157,7 @@ class Dictionary(object):
                                        symmetric_cooc_values=symmetric_cooc_values)
 
     def filter(self, class_id=None, min_df=None, max_df=None, min_df_rate=None, max_df_rate=None,
-               min_tf=None, max_tf=None):
+               min_tf=None, max_tf=None, max_dictionary_size=None, recalculate_value=False, inplace=True):
         """
         :Description: filters the BigARTM dictionary of the collection, which\
                       was already loaded into the lib
@@ -162,10 +171,16 @@ class Dictionary(object):
         :param float max_df_rate: max df rate to pass the filter
         :param float min_tf: min tf value to pass the filter
         :param float max_tf: max tf value to pass the filter
+        :param float max_dictionary_size: give an easy option to limit dictionary size;
+                                          rare tokens will be excluded until dictionary reaches given size.
+        :param bool recalculate_value: recalculate or not value field in dictionary after filtration\
+                                       according to new sun of tf values
+        :param bool inplace: if True, fill in place, otherwise return a new dictionary
 
         :Note: the current dictionary will be replaced with filtered
         """
-        self._master.filter_dictionary(dictionary_target_name=self._name,
+        target = self if inplace else Dictionary()
+        self._master.filter_dictionary(dictionary_target_name=target._name,
                                        dictionary_name=self._name,
                                        class_id=class_id,
                                        min_df=min_df,
@@ -173,10 +188,14 @@ class Dictionary(object):
                                        min_df_rate=min_df_rate,
                                        max_df_rate=max_df_rate,
                                        min_tf=min_tf,
-                                       max_tf=max_tf)
+                                       max_tf=max_tf,
+                                       max_dictionary_size=max_dictionary_size,
+                                       recalculate_value=recalculate_value)
+        return target
 
-    def copy():
-        """
-        :Description: returns a copy the dictionary loaded in lib with another name.
-        """
-        raise NotImplementedError()
+    def __deepcopy__(self, memo):
+        return self
+
+    def __repr__(self):
+        descr = next(x for x in self._master.get_info().dictionary if x.name == self.name)
+        return 'artm.Dictionary(name={0}, num_entries={1})'.format(descr.name, descr.num_entries)

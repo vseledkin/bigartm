@@ -1,7 +1,6 @@
-// Copyright 2014, Additive Regularization of Topic Models.
+// Copyright 2017, Additive Regularization of Topic Models.
 
-#ifndef SRC_ARTM_CORE_MASTER_COMPONENT_H_
-#define SRC_ARTM_CORE_MASTER_COMPONENT_H_
+#pragma once
 
 #include <functional>
 #include <memory>
@@ -14,7 +13,6 @@
 
 #include "artm/core/common.h"
 #include "artm/core/dictionary.h"
-#include "artm/core/internals.pb.h"
 #include "artm/core/thread_safe_holder.h"
 
 namespace artm {
@@ -77,6 +75,8 @@ class MasterComponent : boost::noncopyable {
   void ClearThetaCache(const ClearThetaCacheArgs& args);
   void ClearScoreCache(const ClearScoreCacheArgs& args);
   void ClearScoreArrayCache(const ClearScoreArrayCacheArgs& args);
+  void ExportScoreTracker(const ExportScoreTrackerArgs& args);
+  void ImportScoreTracker(const ImportScoreTrackerArgs& args);
 
   // DISPOSE functionality
   void DisposeModel(const std::string& name);
@@ -92,6 +92,7 @@ class MasterComponent : boost::noncopyable {
   void OverwriteTopicModel(const ::artm::TopicModel& topic_model);
 
   void ReconfigureMasterModel(const MasterModelConfig& config);
+  void ReconfigureTopicName(const MasterModelConfig& config);
 
   void CreateOrReconfigureRegularizer(const RegularizerConfig& config);
 
@@ -110,7 +111,8 @@ class MasterComponent : boost::noncopyable {
                                  ScoreManager* score_manager,
                                  ::artm::ThetaMatrix* theta_matrix);
 
-  void CreateOrReconfigureMasterComponent(const MasterModelConfig& config, bool reconfigure);
+  void CreateOrReconfigureMasterComponent(const MasterModelConfig& config, bool reconfigure,
+                                          bool change_topic_name);
 
   void AddDictionary(std::shared_ptr<Dictionary> dictionary);
 
@@ -119,5 +121,3 @@ class MasterComponent : boost::noncopyable {
 
 }  // namespace core
 }  // namespace artm
-
-#endif  // SRC_ARTM_CORE_MASTER_COMPONENT_H_

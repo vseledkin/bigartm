@@ -6,11 +6,9 @@ set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
 enable_testing()
 
-if (WIN32)
-  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-endif (WIN32)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 set(3RD_PARTY_DIR ${CMAKE_SOURCE_DIR}/3rdparty)
 
@@ -25,6 +23,7 @@ if (MSVC)
   add_definitions("-D_SCL_SECURE_NO_WARNINGS")
   add_definitions("/wd4251")
   add_definitions("/MP")
+  add_definitions("/EHsc")
 else (MSVC)
   if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
@@ -36,11 +35,7 @@ option(BUILD_TESTS "Indicates whether to build artm_tests" ON)
 option(BUILD_BIGARTM_CLI "Indicates whether to build bigartm-CLI executable" ON)
 option(BUILD_INTERNAL_PYTHON_API "Indicates whether to build Python API" ON)
 
-if (MSVC OR APPLE)
 set(PYTHON python CACHE INTERNAL "Python command")
-else (MSVC OR APPLE)
-set(PYTHON python2 CACHE INTERNAL "Python command")
-endif (MSVC)
 
 if (BUILD_BIGARTM_CLI AND UNIX AND NOT APPLE)
   option(BUILD_BIGARTM_CLI_STATIC "Request build of static executable bigartm (for Linux only)" ON)
@@ -65,7 +60,7 @@ check_include_files(unistd.h HAVE_UNISTD_H)
 if (("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang") OR
     ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU"))
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -pthread -fPIC")
-  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -g -Werror")
+  set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -g -Wall")
   set(GFLAGS_INTTYPES_FORMAT "C99")
 elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
   set(Boost_USE_MULTITHREADED ON)
@@ -95,9 +90,12 @@ find_package(Boost COMPONENTS REQUIRED ${BIGARTM_BOOST_COMPONENTS})
 if (NOT Boost_FOUND)
   message(SEND_ERROR "Failed to find required boost libraries.")
   return()
-else (NOT Boost_FOUND)
-  include_directories(${Boost_INCLUDE_DIRS})
 endif (NOT Boost_FOUND)
+
+set(BOOST_IMPORTED_TARGETS Boost::boost)
+foreach(boost_component ${BIGARTM_BOOST_COMPONENTS})
+    list(APPEND BOOST_IMPORTED_TARGETS Boost::${boost_component})
+endforeach(boost_component)
 
 add_subdirectory(3rdparty)  # gflags must be compiled without -std=c++11
 

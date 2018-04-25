@@ -1,7 +1,6 @@
-// Copyright 2014, Additive Regularization of Topic Models.
+// Copyright 2017, Additive Regularization of Topic Models.
 
-#ifndef SRC_ARTM_CORE_INSTANCE_H_
-#define SRC_ARTM_CORE_INSTANCE_H_
+#pragma once
 
 #include <map>
 #include <memory>
@@ -12,7 +11,6 @@
 #include "boost/utility.hpp"
 
 #include "artm/core/common.h"
-#include "artm/core/internals.pb.h"
 #include "artm/core/processor_input.h"
 #include "artm/core/thread_safe_holder.h"
 
@@ -106,5 +104,3 @@ class Instance {
 
 }  // namespace core
 }  // namespace artm
-
-#endif  // SRC_ARTM_CORE_INSTANCE_H_

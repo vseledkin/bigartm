@@ -1,9 +1,12 @@
+# Copyright 2017, Additive Regularization of Topic Models.
+
 """
 Specifications of C-API functions
 """
 
 # TODO: generate this file automatically
 
+import six
 import ctypes
 
 import numpy
@@ -92,7 +95,7 @@ ARTM_API = [
     ),
     CallSpec(
         'ArtmDisposeBatch',
-        [('master_id', int), ('name', str)],
+        [('master_id', int), ('name', six.text_type)],
     ),
     CallSpec(
         'ArtmOverwriteTopicModel',
@@ -203,6 +206,10 @@ ARTM_API = [
         [('master_id', int), ('config', messages.MasterModelConfig)],
     ),
     CallSpec(
+        'ArtmReconfigureTopicName',
+        [('master_id', int), ('config', messages.MasterModelConfig)],
+    ),
+    CallSpec(
         'ArtmFitOfflineMasterModel',
         [('master_id', int), ('config', messages.FitOfflineMasterModelArgs)],
     ),
@@ -219,5 +226,13 @@ ARTM_API = [
         'ArtmRequestTransformMasterModelExternal',
         [('master_id', int), ('config', messages.TransformMasterModelArgs)],
         request=messages.ThetaMatrix,
+    ),
+    CallSpec(
+        'ArtmExportScoreTracker',
+        [('master_id', int), ('args', messages.ExportScoreTrackerArgs)],
+    ),
+    CallSpec(
+        'ArtmImportScoreTracker',
+        [('master_id', int), ('args', messages.ImportScoreTrackerArgs)],
     ),
 ]

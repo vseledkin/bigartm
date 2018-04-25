@@ -5,8 +5,26 @@ This page describes recent changes in BigARTM's Python API.
 Note that the API might be affected by changes in the underlying protobuf messages.
 For this reason we recommend to review :doc:`messages`.
 
-For further reference about Python API refer to :doc:`/python_interface/artm_model`,
+For further reference about Python API refer to :doc:`/api_references/python_interface/artm_model`,
 `Q & A <https://github.com/bigartm/bigartm/wiki/Q&A>`_ or `tutorials <https://github.com/bigartm/bigartm-book/blob/master/README.md>`_.
+
+v0.9.0
+------
+* Remove flag ``process_in_memory`` from ``artm.BatchVectorizer``, and rename ``model`` parameter into ``process_in_memory_model``. Passing this parameter with ``data_format='batches'`` will trigger in-memory processing of batches specified in ``batches`` parameter.
+* ``artm.BatchVectorizer`` now can receive sparse matrices (subclasses of ``scipy.sparse.spmatrix``) for in-memory batch processing.
+* Enable custom decorrelation by specifying separate decorrelation coefficients for every pair of topics into ``artm.DecorrelatorPhiRegularizer`` via optional parameter ``topic_pairs``.
+* Add new regularizers: ``artm.SmoothTimeInTopicsPhiRegularizer`` and ``artm.NetPlsaRegularizer``.
+* Add support for entire model saving and loading via ``dump_artm_model`` and ``load_artm_model`` methods of ``artm.ARTM``.
+
+
+v0.8.3
+------
+
+* Enable copying of ARTM, LDA, hARTM and ARTM_Level objects with ``clone()`` method and ``copy.deepcopy(obj)``.
+* Experimental support for import/export/editing of theta matrices; for more details see python reference of ``ARTM.__init__(ptd_name='ptd')``.
+* ``ARTM.get_phi_dense()`` method to extract phi matrix without pandas.DataFrame, see `#758 <https://github.com/bigartm/bigartm/issues/758>`_.
+* Bug fix in ``ARTM.get_phi_sparse()`` to return tokens as rows, and topic names as columns (previously it was the opposite way)
+
 
 v0.8.2
 ------
@@ -16,6 +34,12 @@ v0.8.2
    BigARTM 3rdparty dependency had been upgraded from ``protobuf 2.6.1`` to ``protobuf 3.0.0``.
    This may affect you upgrade from previous version of bigartm.
    Pelase report any issues at `bigartm-users@googlegroups.com <https://groups.google.com/group/bigartm-users>`_.
+
+.. warning::
+
+   BigARTM now require you to install `tqdm <https://github.com/tqdm/tqdm>`_ library to visualize progress bars.
+   To install use ``pip install tqdm`` or ``conda install -c conda-forge tqdm``.
+
 
 * Add support for python 3.0
 * Add hARTM class to support hierarchy model
@@ -28,6 +52,16 @@ v0.8.2
     model.regularizers['somename'] = SomeRegularizer(...)
     # using keyword argument overwrite in add function
     model.regularizers.add(SomeRegularizer(name='somename', ...), overwrite=True)
+
+* Better error reporting: raise exception in fit_offline, fit_online and transform if there is no data to process)
+* Better support for changes in topic names, with reconfigure(), initialize() and merge_model()
+* Show progress bars in ``fit_offline``, ``fit_online`` and ``transform``.
+* Add ``ARTM.reshape_topics`` method to add/remove/reorder topics.
+* Add ``max_dictionary_size`` parameter to ``Dictionary.filter()``
+* Add ``class_ids`` parameter to ``BatchVectorizer.__init__()``
+* Add ``dictionary_name`` parameter to ``MasterComponent.merge_model()``
+* Add ``ARTM.transform_sparse()`` and ``ARTM.get_theta_sparse()`` for sparse retrieval of theta matrix
+* Add ``ARTM.get_phi_sparse()`` for sparse retrieval of phi matrix
 
 v0.8.1
 ------
