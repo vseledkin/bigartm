@@ -1,4 +1,4 @@
-// Copyright 2017, Additive Regularization of Topic Models.
+// Copyright 2018, Additive Regularization of Topic Models.
 
 #pragma once
 
@@ -31,6 +31,8 @@ class BatchNameGenerator {
   std::string next_name_;
   bool use_guid_name_;
 };
+
+std::string DropWeightSuffix(const std::string& token);
 
 // CollectionParser class is responsible for parsing all text formats, available in BigARTM (UCI Bow and VW parser).
 class CollectionParser : boost::noncopyable {

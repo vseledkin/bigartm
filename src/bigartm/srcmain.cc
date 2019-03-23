@@ -1,12 +1,12 @@
-// Copyright 2018, Additive Regularization of Topic Models.
+// Copyright 2019, Additive Regularization of Topic Models.
 
 #include <stdlib.h>
+
 #include <algorithm>
 #include <chrono>
-#include <ctime>
+#include <cstring>
 #include <fstream>
 #include <future>
-#include <cstring>
 #include <iostream>
 #include <iomanip>
 #include <set>
@@ -269,7 +269,6 @@ struct artm_options {
   std::string dictionary_max_df;
   int dictionary_size;
   int cooc_window;
-  int doc_per_cooc_batch;
   int cooc_min_df;
   int cooc_min_tf;
 
@@ -291,7 +290,7 @@ struct artm_options {
   std::vector<std::string> regularizer;
   bool b_reuse_theta;
   int threads;
-  bool async;
+  bool asynchronous;
 
   // Output
   bool force;
@@ -778,8 +777,9 @@ class ScoreHelper {
      if (score_type == "perplexity") {
        PerplexityScoreConfig specific_config;
        for (const auto& class_id : class_ids) {
-         specific_config.add_transaction_type(class_id.first);
+         specific_config.add_class_id(class_id.first);
        }
+
        if (dictionary_name.empty()) {
          specific_config.set_model_type(PerplexityScoreConfig_Type_UnigramDocumentModel);
        } else {
@@ -1112,6 +1112,8 @@ class BatchVectorizer {
           collection_parser_config.set_vocab_file_path(options_.read_uci_vocab);
         }
 
+        collection_parser_config.set_num_threads(options_.threads);
+
         collection_parser_config.set_target_folder(batch_folder_);
         collection_parser_config.set_num_items_per_batch(options_.batch_size);
         collection_parser_config.set_name_type(options_.b_guid_batch_name ? CollectionParserConfig_BatchNameType_Guid : CollectionParserConfig_BatchNameType_Code);
@@ -1338,7 +1340,7 @@ int execute(const artm_options& options, int argc, char* argv[]) {
     }
 
     master_config.add_class_id(class_id.first);
-    master_config.add_class_weight(class_id.second == 0.0f ? 1.0f : class_id.second);
+    master_config.add_class_weight(std::abs(class_id.second) < 1e-16 ? 1.0f : class_id.second);
   }
 
   master_config.set_opt_for_avx(!options.b_disable_avx_opt);
@@ -1587,7 +1589,7 @@ int execute(const artm_options& options, int argc, char* argv[]) {
 
     if (options.update_every > 0) {  // online algorithm
       FitOnlineMasterModelArgs fit_online_args;
-      fit_online_args.set_async(options.async);
+      fit_online_args.set_asynchronous(options.asynchronous);
 
       int update_after = 0;
       do {
@@ -1714,8 +1716,9 @@ int execute(const artm_options& options, int argc, char* argv[]) {
     TransformMasterModelArgs transform_args;
     transform_args.set_theta_matrix_type(::artm::ThetaMatrixType_Dense);
     if (!options.predict_class.empty()) {
-      transform_args.set_predict_transaction_type(options.predict_class);
+      transform_args.set_predict_class_id(options.predict_class);
     }
+
     for (const auto& batch_filename : batch_file_names) {
       transform_args.add_batch_filename(batch_filename.string());
     }
@@ -1763,7 +1766,6 @@ int main(int argc, char * argv[]) {
       ("cooc-min-tf", po::value(&options.cooc_min_tf)->default_value(0), "minimal value of cooccurrences of a pair of tokens that are saved in dictionary of cooccurrences")
       ("cooc-min-df", po::value(&options.cooc_min_df)->default_value(0), "minimal value of documents in which a specific pair of tokens occurred together closely")
       ("cooc-window", po::value(&options.cooc_window)->default_value(5), "number of tokens around specific token, which are used in calculation of cooccurrences")
-      ("doc-per-cooc-batch", po::value(&options.doc_per_cooc_batch)->default_value(10000), "number of documents which will be processed and written in 1 cooc batch")
       ("dictionary-min-df", po::value(&options.dictionary_min_df)->default_value(""), "filter out tokens present in less than N documents / less than P% of documents")
       ("dictionary-max-df", po::value(&options.dictionary_max_df)->default_value(""), "filter out tokens present in less than N documents / less than P% of documents")
       ("dictionary-size", po::value(&options.dictionary_size)->default_value(0), "limit dictionary size by filtering out tokens with high document frequency")
@@ -1789,7 +1791,7 @@ int main(int argc, char * argv[]) {
       ("reuse-theta", po::bool_switch(&options.b_reuse_theta)->default_value(false), "reuse theta between iterations")
       ("regularizer", po::value< std::vector<std::string> >(&options.regularizer)->multitoken()->zero_tokens(), "regularizers (SmoothPhi,SparsePhi,SmoothTheta,SparseTheta,Decorrelation)")
       ("threads", po::value(&options.threads)->default_value(-1), "number of concurrent processors (default: auto-detect)")
-      ("async", po::bool_switch(&options.async)->default_value(false), "invoke asynchronous version of the online algorithm")
+      ("asynchronous", po::bool_switch(&options.asynchronous)->default_value(false), "invoke asynchronous version of the online algorithm")
     ;
 
     po::options_description output_options("Output");

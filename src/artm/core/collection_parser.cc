@@ -1,19 +1,19 @@
-// Copyright 2017, Additive Regularization of Topic Models.
+// Copyright 2019, Additive Regularization of Topic Models.
 
 #include "artm/core/collection_parser.h"
 
 #include <algorithm>
-#include <sstream>
-#include <vector>
-#include <string>
-#include <map>
-#include <memory>
-#include <utility>
-#include <unordered_set>
-#include <unordered_map>
+#include <atomic>
 #include <iostream>  // NOLINT
 #include <future>  // NOLINT
-#include <atomic>
+#include <map>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <unordered_set>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "boost/algorithm/string.hpp"
 #include "boost/algorithm/string/predicate.hpp"
@@ -26,11 +26,12 @@
 #include "artm/utility/ifstream_or_cin.h"
 #include "artm/utility/progress_printer.h"
 
+#include "artm/core/cooccurrence_collector.h"
 #include "artm/core/common.h"
 #include "artm/core/exceptions.h"
 #include "artm/core/helpers.h"
 #include "artm/core/protobuf_helpers.h"
-#include "artm/core/cooccurrence_collector.h"
+#include "artm/core/transaction_type.h"
 
 using ::artm::utility::ifstream_or_cin;
 
@@ -148,6 +149,7 @@ CollectionParserInfo CollectionParser::ParseDocwordBagOfWordsUci(TokenMap* token
   }
 
   std::unordered_map<int, int> batch_dictionary;
+  std::unordered_set<ClassId> batch_class_ids;
   ::artm::Batch batch;
   ::artm::Item* item = nullptr;
   int prev_item_id = -1;
@@ -205,19 +207,26 @@ CollectionParserInfo CollectionParser::ParseDocwordBagOfWordsUci(TokenMap* token
       BOOST_THROW_EXCEPTION(ArgumentOutOfRangeException("wordID", token_id, ss.str()));
     }
 
-    if (token_weight == 0.0f) {
+    if (isZero(token_weight)) {
       token_weight_zero++;
       continue;
     }
 
     if (item_id != prev_item_id) {
       prev_item_id = item_id;
+
+      if (item != nullptr) {
+        item->add_transaction_start_index(item->transaction_start_index_size());
+      }
+
       if (batch.item_size() >= config_.num_items_per_batch()) {
         batch.set_id(boost::lexical_cast<std::string>(boost::uuids::random_generator()()));
+        batch.add_transaction_typename(DefaultTransactionTypeName);
         ::artm::core::Helpers::SaveBatch(batch, config_.target_folder(), batch_name_generator.next_name(batch));
         num_batches++;
         batch.Clear();
         batch_dictionary.clear();
+        batch_class_ids.clear();
       }
 
       item = batch.add_item();
@@ -237,12 +246,16 @@ CollectionParserInfo CollectionParser::ParseDocwordBagOfWordsUci(TokenMap* token
     if (iter == batch_dictionary.end()) {
       batch_dictionary.insert(std::make_pair(token_id, static_cast<int>(batch_dictionary.size())));
       batch.add_token((*token_map)[token_id].keyword);
-      batch.add_class_id((*token_map)[token_id].class_id);
+
+      const auto& class_id = (*token_map)[token_id].class_id;
+      batch.add_class_id(class_id);
+      batch_class_ids.emplace(class_id);
       iter = batch_dictionary.find(token_id);
     }
 
-    item->add_transaction_token_id(iter->second);
+    item->add_token_id(iter->second);
     item->add_transaction_start_index(item->transaction_start_index_size());
+    item->add_transaction_typename_id(0);
     item->add_token_weight(token_weight);
 
     // Increment statistics
@@ -253,7 +266,12 @@ CollectionParserInfo CollectionParser::ParseDocwordBagOfWordsUci(TokenMap* token
   }
 
   if (batch.item_size() > 0) {
+    if (item != nullptr) {
+      item->add_transaction_start_index(item->transaction_start_index_size());
+    }
+
     batch.set_id(boost::lexical_cast<std::string>(boost::uuids::random_generator()()));
+    batch.add_transaction_typename(DefaultTransactionTypeName);
     ::artm::core::Helpers::SaveBatch(batch, config_.target_folder(), batch_name_generator.next_name(batch));
     num_batches++;
   }
@@ -362,6 +380,7 @@ class CollectionParser::BatchCollector {
   float total_token_weight_;
   int64_t total_items_count_;
   int64_t total_tokens_count_;
+  std::unordered_map<TransactionTypeName, int> tt_name_to_id_;
 
   void StartNewItem() {
     item_ = batch_.add_item();
@@ -373,16 +392,26 @@ class CollectionParser::BatchCollector {
     batch_.set_id(boost::lexical_cast<std::string>(boost::uuids::random_generator()()));
   }
 
-  void Record(std::vector<ClassId> class_ids, std::vector<std::string> tokens, float token_weight) {
+  void RecordTransaction(const std::vector<ClassId>& class_ids, const std::vector<std::string>& tokens,
+      const std::vector<float>& token_weights, const TransactionTypeName& transaction_typename) {
     // prepare item for transaction insetion
     if (item_ == nullptr) {
       StartNewItem();
     }
-    item_->add_token_weight(token_weight);
-    item_->add_transaction_start_index(item_->transaction_token_id_size());
+
+    auto id_iter = tt_name_to_id_.find(transaction_typename);
+    if (id_iter == tt_name_to_id_.end()) {
+      tt_name_to_id_.emplace(transaction_typename, tt_name_to_id_.size());
+
+      id_iter = tt_name_to_id_.find(transaction_typename);
+    }
+
+    item_->add_transaction_start_index(item_->token_id_size());
+    item_->add_transaction_typename_id(id_iter->second);
 
     for (int i = 0; i < class_ids.size(); ++i) {
       Token token(class_ids[i], tokens[i]);
+
       if (global_map_.find(token) == global_map_.end()) {
         global_map_.insert(std::make_pair(token, CollectionParserTokenInfo(token.keyword, token.class_id)));
       }
@@ -395,10 +424,11 @@ class CollectionParser::BatchCollector {
       CollectionParserTokenInfo& token_info = global_map_[token];
       int local_token_id = local_map_[token];
 
-      item_->add_transaction_token_id(local_token_id);
+      item_->add_token_id(local_token_id);
+      item_->add_token_weight(token_weights[i]);
       token_info.items_count++;
-      token_info.token_weight += token_weight;
-      total_token_weight_ += token_weight;
+      token_info.token_weight += token_weights[i];
+      total_token_weight_ += token_weights[i];
       total_tokens_count_ += 1;
     }
   }
@@ -410,6 +440,7 @@ class CollectionParser::BatchCollector {
 
     item_->set_id(item_id);
     item_->set_title(item_title);
+    item_->add_transaction_start_index(item_->token_id_size());
 
     LOG_IF(INFO, total_items_count_ % 100000 == 0) << total_items_count_ << " documents parsed.";
 
@@ -424,14 +455,29 @@ class CollectionParser::BatchCollector {
     info->set_total_token_weight(info->total_token_weight() + total_token_weight_);
     info->set_num_batches(info->num_batches() + 1);
 
+    auto vec = std::vector<TransactionTypeName>(tt_name_to_id_.size());
+    for (const auto& tt_id : tt_name_to_id_) {
+      vec[tt_id.second] = tt_id.first;
+    }
+
+    for (const auto& v : vec) {
+      batch_.add_transaction_typename(v);
+    }
+
     Batch batch;
     batch.Swap(&batch_);
     local_map_.clear();
+    tt_name_to_id_.clear();
     return batch;
   }
 
   const Batch& batch() { return batch_; }
 };
+
+std::string DropWeightSuffix(const std::string& token) {
+  size_t split_index = token.find(':');
+  return token.substr(0, split_index);
+}
 
 // ToDo (MichaelSolotky): split this func into several
 CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
@@ -441,7 +487,7 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
   std::istream& docword = stream_or_cin.get_stream();
   utility::ProgressPrinter progress(stream_or_cin.size());
 
-  auto config = config_;
+  auto collection_parser_config = config_;
 
   std::mutex read_access;
   std::mutex cooc_config_access;
@@ -453,21 +499,23 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
   std::unordered_map<Token, bool, TokenHasher> token_map;
   CollectionParserInfo parser_info;
 
-  ::artm::core::CooccurrenceCollector cooc_collector(config);
+  ::artm::core::CooccurrenceCollector cooc_collector(collection_parser_config);
   int64_t total_num_of_pairs = 0;
-  std::atomic_bool gather_transaction_cooc(false);
+  std::atomic_bool gather_transaction_cooc(false);  // This flag will be needed for special
+  // gathering of co-occurrences on transaction data
 
   // The function defined below works as follows:
   // 1. Acquire lock for reading from docword file
   // 2. Read num_items_per_batch lines from docword file, and store them in a local buffer (vector<string>)
   // 3. Release the lock
-  // 4. Parse strings, form a batch, and save it to disk
+  // 4. Parse strings, form a batch, and save it to the external storage
   // During parsing it gathers co-occurrence counters for pairs of tokens (if the correspondent flag == true)
   // Steps 1-4 are repeated in a while loop until there is no content left in docword file.
   // Multiple copies of the function can work in parallel.
-  auto func = [&docword, &global_line_no, &progress, &batch_name_generator, &read_access, &cooc_config_access,
-               &token_map_access, &token_statistics_access, &parser_info, &token_map, &total_num_of_pairs,
-               &cooc_collector, &gather_transaction_cooc, config]() {
+  auto func = [&docword, &global_line_no, &progress, &batch_name_generator, &read_access,
+               &cooc_config_access, &token_map_access, &token_statistics_access, &parser_info,
+               &token_map, &total_num_of_pairs, &cooc_collector, &gather_transaction_cooc,
+               collection_parser_config]() {
     int64_t local_num_of_pairs = 0;  // statistics for future ppmi calculation
     while (true) {
       // The following variable remembers at which line the batch has started.
@@ -478,7 +526,6 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
       std::vector<std::string> all_strs_for_batch;
       std::string batch_name;
       BatchCollector batch_collector;
-      std::unordered_set<TransactionType, TransactionHasher> transaction_types;
 
       {  // Read portion of documents
         std::lock_guard<std::mutex> guard(read_access);
@@ -487,7 +534,7 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
           break;
         }
 
-        while ((int64_t) all_strs_for_batch.size() < config.num_items_per_batch()) {
+        while ((int64_t) all_strs_for_batch.size() < collection_parser_config.num_items_per_batch()) {
           std::string str;
           std::getline(docword, str);
           global_line_no++;
@@ -504,16 +551,17 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
         }
       }
 
-      // It will hold tf and df of pairs of tokens
-      // Every pair of valid tokens (both exist in vocab) is saved in this storage
-      // After walking through portion of documents all the statistics is dumped on disk
-      // and then this storage is destroyed
+      // This container holds tf and df of pairs of tokens
+      // Every pair of valid tokens (e.g. both exist in vocab) is saved in this storage
+      // After walking through a batch of documents all the statistics will be dumped to the external storage
+      // and then this storage will be destroyed
       CooccurrenceStatisticsHolder cooc_stat_holder;
       // For every token from vocab keep the information about the last document this token occured in
-      // std::unordered_map<int> num_of_last_document_token_occured;  // ToDo: think how to add elements here
-      // ToDo (MichaelSolotky): consider the case if there is no vocab
-      std::vector<int> num_of_last_document_token_occured(cooc_collector.vocab_.token_map_.size(), -1);
 
+      // ToDo (MichaelSolotky): consider the case if there is no vocab
+      std::vector<int> num_of_the_last_document_token_occurred_in(cooc_collector.VocabSize(), -1);
+
+      // Loop through documents
       for (int str_index = 0; str_index < (int64_t) all_strs_for_batch.size(); ++str_index) {
         std::string str = all_strs_for_batch[str_index];
         const int line_no = first_line_no_for_batch + str_index;
@@ -523,14 +571,21 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
 
         if (strs.size() <= 1) {
           std::stringstream ss;
-          ss << "Error in " << config.docword_file_path() << ":" << line_no
+          ss << "Error in " << collection_parser_config.docword_file_path() << ":" << line_no
              << " has too few entries: " << str;
           BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
         }
 
         std::string item_title = strs[0];
 
-        std::vector<ClassId> class_ids = { DefaultClass };
+        TransactionTypeName current_tt_name = DefaultTransactionTypeName;
+        ClassId current_class_id = DefaultClass;
+
+        std::vector<std::string> tokens;
+        std::vector<ClassId> class_ids;
+        std::vector<float> weights;
+
+        // Loop through tokens
         for (unsigned elem_index = 1; elem_index < strs.size(); ++elem_index) {
           std::string elem = strs[elem_index];
           if (elem.size() == 0) {
@@ -538,92 +593,102 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
           }
 
           if (elem[0] == '|') {
-            std::string temp = elem.substr(1);
-            boost::split(class_ids, temp, boost::is_any_of(TransactionSeparator));
-            if (class_ids.empty()) {
-              class_ids = { DefaultClass };
+            if (elem.size() > 1 && elem[1] == '|') {
+              if (elem.size() == 2) {
+                // end of previous transaction
+                if (tokens.size() > 0) {
+                  batch_collector.RecordTransaction(class_ids, tokens, weights, current_tt_name);
+                }
+              } else {
+                // change of transaction typename
+                // dump all previous tokens, each as one transaction
+                for (int i = 0; i < tokens.size(); ++i) {
+                  batch_collector.RecordTransaction({ class_ids[i] }, { tokens[i] }, { weights[i] }, current_tt_name);
+                }
+                current_tt_name = elem.substr(2);
+              }
+
+              // reset class_id in context to default when change tt_name of finish transaction
+              tokens.clear();
+              weights.clear();
+              class_ids.clear();
+              current_class_id = DefaultClass;
+
+              continue;
+            } else {
+              current_class_id = elem.substr(1);
+              if (current_class_id.empty()) {
+                current_class_id = DefaultClass;
+              }
+              continue;
             }
-            continue;
           }
 
           // Skip token when it is not among modalities that user has requested to parse
-          if (!useClassId(class_ids, config)) {
+          if (!useClassId(current_class_id, collection_parser_config)) {
             continue;
           }
 
-          float transaction_weight = 1.0f;
+          float token_weight = 1.0f;
+          std::string token = elem;
           size_t split_index = elem.find(':');
-          std::vector<std::string> tokens;
-          std::string temp = split_index != std::string::npos ? elem.substr(0, split_index) : elem;
-          boost::split(tokens, temp, boost::is_any_of(TransactionSeparator));
-
-          if (class_ids.size() != tokens.size()) {
-            std::stringstream ss;
-            ss << "Error in " << config.docword_file_path() << ":" << line_no
-               << ", transaction type size is " << class_ids.size() << " and transaction size is "
-               << tokens.size() << " in " << elem;
-            BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
-          }
-
           if (split_index != std::string::npos) {
             if (split_index == 0 || split_index == (elem.size() - 1)) {
               std::stringstream ss;
-              ss << "Error in " << config.docword_file_path() << ":" << line_no
+              ss << "Error in " << collection_parser_config.docword_file_path() << ":" << line_no
                  << ", entries can not start or end with colon: " << elem;
               BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
             }
-            std::string transaction_occurences_string = elem.substr(split_index + 1);
+            token = elem.substr(0, split_index);
             try {
-              transaction_weight = boost::lexical_cast<float>(transaction_occurences_string);
+              token_weight = boost::lexical_cast<float>(elem.substr(split_index + 1));
             }
             catch (boost::bad_lexical_cast &) {
               std::stringstream ss;
-              ss << "Error in " << config.docword_file_path() << ":" << line_no
+              ss << "Error in " << collection_parser_config.docword_file_path() << ":" << line_no
                  << ", can not parse integer number of occurences: " << elem;
               BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
             }
           }
 
-          transaction_types.emplace(TransactionType(class_ids));
-          batch_collector.Record(class_ids, tokens, transaction_weight);
+          tokens.push_back(token);
+          class_ids.push_back(current_class_id);
+          weights.push_back(token_weight);
 
-          if (config.gather_cooc()) {
-            if (class_ids.size() > 1) {
-              gather_transaction_cooc = true;
-              return;
-            }
-            const ClassId first_token_class_id = class_ids[0];
+          if (collection_parser_config.gather_cooc()) {  // Co-occurence gathering starts here
+            const ClassId first_token_class_id = current_class_id;
 
             int first_token_id = -1;
-            if (config.has_vocab_file_path()) {
-              first_token_id = cooc_collector.vocab_.FindTokenId(elem, first_token_class_id);
+            if (collection_parser_config.has_vocab_file_path()) {
+              std::string first_token = DropWeightSuffix(elem);
+              first_token_id = cooc_collector.FindTokenIdInVocab(first_token, first_token_class_id);
               if (first_token_id == TOKEN_NOT_FOUND) {
                 continue;
               }
-            } else {  // ToDo (MichaelSolotky): continue the case if there is no vocab
+            } else {  // ToDo (MichaelSolotky): consider the case if there is no vocab
               BOOST_THROW_EXCEPTION(InvalidOperation("No vocab file specified. Can't gather co-occurrences"));
             }
 
-            if (num_of_last_document_token_occured[first_token_id] != str_index) {
-              num_of_last_document_token_occured[first_token_id] = str_index;
+            if (num_of_the_last_document_token_occurred_in[first_token_id] != str_index) {
+              num_of_the_last_document_token_occurred_in[first_token_id] = str_index;
               std::unique_lock<std::mutex> lock(token_statistics_access);
               ++cooc_collector.num_of_documents_token_occurred_in_[first_token_id];
             }
             // Take window_width tokens (parameter) to the right of the current one
-            // If there are some words beginnig on '|' in the text the window should be extended
+            // If there are some words beginnig with '|' in the text the window should be extended
             // and it's extended using not_a_word_counter
             ClassId second_token_class_id = first_token_class_id;
             unsigned not_a_word_counter = 0;
             // Loop through tokens in the window
-            for (unsigned neigh_index = 1; neigh_index <= cooc_collector.config_.cooc_window_width() +
-                                                          not_a_word_counter &&
-                                                          elem_index + neigh_index < strs.size();
-                                                          ++neigh_index) {
-              if (strs[elem_index + neigh_index].empty()) {
+            for (unsigned neighbour_index = 1; neighbour_index <= cooc_collector.config_.cooc_window_width() +
+                                               not_a_word_counter &&
+                                               elem_index + neighbour_index < strs.size();
+                                               ++neighbour_index) {
+              if (strs[elem_index + neighbour_index].empty()) {
                 continue;
               }
-              if (strs[elem_index + neigh_index][0] == '|') {
-                second_token_class_id = strs[elem_index + neigh_index].substr(1);
+              if (strs[elem_index + neighbour_index][0] == '|') {
+                second_token_class_id = strs[elem_index + neighbour_index].substr(1);
                 ++not_a_word_counter;
                 continue;
               }
@@ -632,13 +697,14 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
                 continue;
               }
               int second_token_id = -1;
-              const std::string neigh = strs[elem_index + neigh_index];
-              if (config.has_vocab_file_path()) {
-                second_token_id = cooc_collector.vocab_.FindTokenId(neigh, second_token_class_id);
+              const std::string neighbour = strs[elem_index + neighbour_index];
+              if (collection_parser_config.has_vocab_file_path()) {
+                std::string second_token = DropWeightSuffix(neighbour);
+                second_token_id = cooc_collector.FindTokenIdInVocab(second_token, second_token_class_id);
                 if (second_token_id == TOKEN_NOT_FOUND) {
                   continue;
                 }
-              } else {  // ToDo (MichaelSolotky): continue the case if there is no vocab
+              } else {  // ToDo (MichaelSolotky): consider the case if there is no vocab
                 BOOST_THROW_EXCEPTION(InvalidOperation("No vocab file specified. Can't gather co-occurrences"));
               }
 
@@ -658,13 +724,20 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
             }  // End of token's neghbors parsing
           }  // End of token parsing
         }  // End of item parsing
+
+        // dump all previous tokens, each as one transaction
+        for (int i = 0; i < tokens.size(); ++i) {
+          batch_collector.RecordTransaction({ class_ids[i] }, { tokens[i] }, { weights[i] }, current_tt_name);
+        }
+
         batch_collector.FinishItem(line_no, item_title);
-      }  // End of items of 1 batch parsing
-      if (config.gather_cooc() && !cooc_stat_holder.Empty()) {
-        // This function saves gathered statistics on disk
-        // After saving on disk statistics from all the batches needs to be merged
+      }  // End of parsing the items of 1 batch
+      if (collection_parser_config.gather_cooc() && !cooc_stat_holder.Empty()) {
+        // This function saves gathered statistics to the external storage
+        // After saving to the external storage statistics from all the batches needs to be merged
         // This is implemented in ReadAndMergeCooccurrenceBatches(), so the next step is to call this method
-        // Sorting is needed before storing all pairs of tokens on disk (it's for future agregation)
+        // Sorting is needed before storing all pairs of tokens to the external storage
+        // (it's for the future aggregation)
         cooc_collector.UploadOnDisk(cooc_stat_holder);
       }
 
@@ -676,33 +749,32 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
           for (int token_id = 0; token_id < batch.token_size(); ++token_id) {
             token_map[artm::core::Token(batch.class_id(token_id), batch.token(token_id))] = true;
           }
-
-          for (const auto& tt : transaction_types) {
-            batch.add_transaction_type(tt.AsString());
-          }
         }
-        ::artm::core::Helpers::SaveBatch(batch, config.target_folder(), batch_name);
+        ::artm::core::Helpers::SaveBatch(batch, collection_parser_config.target_folder(), batch_name);
       }
     }  // End of collection parsing
+
     {  // Save number of pairs (needed for ppmi)
       std::unique_lock<std::mutex> lock(cooc_config_access);
       total_num_of_pairs += local_num_of_pairs;
     }
   };
 
-  int num_threads = config.num_threads();
-  if (!config.has_num_threads() || config.num_threads() < 0) {
-    unsigned int n = std::thread::hardware_concurrency();
+  int num_threads = 0;
+  if (!collection_parser_config.has_num_threads() || collection_parser_config.num_threads() < 0) {
+    int n = std::thread::hardware_concurrency();
     if (n == 0) {
-      LOG(INFO) << "CollectionParserConfig.num_threads is set to 1 (default)";
       num_threads = 1;
+      LOG(INFO) << "CollectionParserConfig.num_threads is set to 1 (default)";
     } else {
-      LOG(INFO) << "CollectionParserConfig.num_threads is automatically set to " << n;
       num_threads = n;
+      LOG(INFO) << "CollectionParserConfig.num_threads is automatically set to " << num_threads;
     }
+  } else {
+    num_threads = collection_parser_config.num_threads();
   }
 
-  Helpers::CreateFolderIfNotExists(config.target_folder());
+  Helpers::CreateFolderIfNotExists(collection_parser_config.target_folder());
 
   // The func may throw an exception if docword is malformed.
   // This exception will be re-thrown on the main thread.
@@ -723,8 +795,8 @@ CollectionParserInfo CollectionParser::ParseVowpalWabbit() {
   cooc_collector.config_.set_total_num_of_documents(parser_info.num_items());
 
   // Launch merging of co-occurrence bathces and ppmi calculation
-  if (config.gather_cooc() && cooc_collector.VocabSize() >= 2) {
-    if (cooc_collector.CooccurrenceBatchesQuantity() != 0) {
+  if (collection_parser_config.gather_cooc() && cooc_collector.VocabSize() >= 2) {
+    if (cooc_collector.NumOfCooccurrenceBatches() != 0) {
       cooc_collector.ReadAndMergeCooccurrenceBatches();
     }
   }

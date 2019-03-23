@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <fstream>  // NOLINT
 #include <vector>
-#include <set>
 #include <unordered_set>
 #include <sstream>
 #include <utility>
@@ -404,11 +403,11 @@ void MasterComponent::ExportModel(const ExportModelArgs& args) {
 
   const char version = 0;
   fout << version;
+
   for (int token_id = 0; token_id < token_size; ++token_id) {
     Token token = n_wt.token(token_id);
     get_topic_model_args.add_token(token.keyword);
     get_topic_model_args.add_class_id(token.class_id);
-    get_topic_model_args.add_transaction_type(token.transaction_type.AsString());
 
     if (((token_id + 1) == token_size) || (get_topic_model_args.token_size() >= tokens_per_chunk)) {
       ::artm::TopicModel external_topic_model;
@@ -421,7 +420,6 @@ void MasterComponent::ExportModel(const ExportModelArgs& args) {
       fout << str;
       get_topic_model_args.clear_class_id();
       get_topic_model_args.clear_token();
-      get_topic_model_args.clear_transaction_type();
     }
   }
 
@@ -601,7 +599,7 @@ void MasterComponent::InitializeModel(const InitializeModelArgs& args) {
   }
 
   std::shared_ptr<PhiMatrix> new_ttm;
-  int included_tokens = 0;
+  int excluded_tokens = 0;
   if (args.has_dictionary_name()) {
     auto dict = instance_->dictionaries()->get(args.dictionary_name());
     if (dict == nullptr) {
@@ -616,40 +614,17 @@ void MasterComponent::InitializeModel(const InitializeModelArgs& args) {
       BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
     }
 
-    std::unordered_set<TransactionType, TransactionHasher> mm_tt;
-    for (const auto& ptt : config->transaction_type()) {
-      mm_tt.insert(TransactionType(ptt));
-    }
-
-    // in each transaction type tokens should have the same order, as in dictionary
-    std::unordered_map<TransactionType, std::vector<Token>, TransactionHasher> tt_to_tokens;
+    new_ttm = std::make_shared< ::artm::core::DensePhiMatrix>(args.model_name(), args.topic_name());
     for (int index = 0; index < (int64_t) dict->size(); ++index) {
       ::artm::core::Token token = dict->entry(index)->token();
 
-      if (dict->HasTransactions()) {
-        bool used_token = false;
-        for (const auto& tt : *(dict->GetTransactionTypes(token.class_id))) {
-          if (mm_tt.size() == 0 || mm_tt.find(tt) != mm_tt.end()) {
-            used_token = true;
-            tt_to_tokens[tt].push_back(Token(token.class_id, token.keyword, tt));
-          }
-        }
-        included_tokens += used_token ? 1.0 : 0.0;
-      } else {
-        std::stringstream ss;
-        ss << "Dictionary '" << args.dictionary_name()
-           << "' is old-style one without transaction info. It should be re-gathered";
-        BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
+      if (config->class_id_size() > 0 && !is_member(token.class_id, config->class_id())) {
+        continue;
       }
-    }
-    new_ttm = std::make_shared< ::artm::core::DensePhiMatrix>(args.model_name(), args.topic_name());
-    for (const auto& tt_tokens : tt_to_tokens) {
-      for (const auto& token : tt_tokens.second) {
-        new_ttm->AddToken(token);
-      }
+      new_ttm->AddToken(token);
     }
 
-    int excluded_tokens = dict->size() - included_tokens;
+    excluded_tokens = dict->size() - new_ttm->token_size();
     LOG_IF(INFO, excluded_tokens > 0)
       << excluded_tokens
       << " tokens were present in the dictionary, but excluded from the model";
@@ -752,7 +727,7 @@ void MasterComponent::Request(const GetMasterComponentInfoArgs& /*args*/, Master
 
 void MasterComponent::Request(const ProcessBatchesArgs& args, ProcessBatchesResult* result) {
   BatchManager batch_manager;
-  RequestProcessBatchesImpl(args, &batch_manager, /* async =*/ false, nullptr, result->mutable_theta_matrix());
+  RequestProcessBatchesImpl(args, &batch_manager, /* asynchronous =*/ false, nullptr, result->mutable_theta_matrix());
   instance_->score_manager()->RequestAllScores(result->mutable_score_data());
 }
 
@@ -775,12 +750,12 @@ void MasterComponent::Request(const ProcessBatchesArgs& args, ProcessBatchesResu
 
 void MasterComponent::AsyncRequestProcessBatches(const ProcessBatchesArgs& process_batches_args,
                                                  BatchManager *batch_manager) {
-  RequestProcessBatchesImpl(process_batches_args, batch_manager, /* async =*/ true,
+  RequestProcessBatchesImpl(process_batches_args, batch_manager, /* asynchronous =*/ true,
                             /*score_manager=*/ nullptr, /* theta_matrix=*/ nullptr);
 }
 
 void MasterComponent::RequestProcessBatchesImpl(const ProcessBatchesArgs& process_batches_args,
-                                                BatchManager* batch_manager, bool async,
+                                                BatchManager* batch_manager, bool asynchronous,
                                                 ScoreManager* score_manager,
                                                 ::artm::ThetaMatrix* theta_matrix) {
   const ProcessBatchesArgs& args = process_batches_args;  // short notation
@@ -804,7 +779,9 @@ void MasterComponent::RequestProcessBatchesImpl(const ProcessBatchesArgs& proces
     // Otherwise, create new n_wt matrix of the same shape as p_wt matrix.
     auto current_nwt_target = instance_->GetPhiMatrix(args.nwt_target_name());
     if (current_nwt_target != nullptr) {
-      PhiMatrixOperations::AssignValue(0.0f, const_cast< ::artm::core::PhiMatrix*>(current_nwt_target.get()));
+      if (process_batches_args.reset_nwt()) {
+        PhiMatrixOperations::AssignValue(0.0f, const_cast<::artm::core::PhiMatrix*>(current_nwt_target.get()));
+      }
     } else {
       auto nwt_target(std::make_shared<DensePhiMatrix>(args.nwt_target_name(), p_wt.topic_name()));
       nwt_target->Reshape(p_wt);
@@ -812,12 +789,12 @@ void MasterComponent::RequestProcessBatchesImpl(const ProcessBatchesArgs& proces
     }
   }
 
-  if (async && args.theta_matrix_type() != ThetaMatrixType_None) {
+  if (asynchronous && args.theta_matrix_type() != ThetaMatrixType_None) {
     BOOST_THROW_EXCEPTION(InvalidOperation(
         "ArtmAsyncProcessBatches require ProcessBatchesArgs.theta_matrix_type to be set to None"));
   }
 
-  // The code below must not use cache_manger in async mode.
+  // The code below must not use cache_manger in asynchronous mode.
   // Since cache_manager lives on stack it will be destroyed once we return from this function.
   // Therefore, no pointers to cache_manager should exist upon return from RequestProcessBatchesImpl.
   CacheManager cache_manager("", nullptr);
@@ -891,7 +868,7 @@ void MasterComponent::RequestProcessBatchesImpl(const ProcessBatchesArgs& proces
     instance_->processor_queue()->push(pi);
   }
 
-  if (async) {
+  if (asynchronous) {
     return;
   }
 
@@ -959,17 +936,7 @@ void MasterComponent::MergeModel(const MergeModelArgs& merge_model_args) {
     }
 
     for (int token_index = 0; token_index < (int64_t) dictionary->size(); ++token_index) {
-      Token token = dictionary->entry(token_index)->token();
-      if (dictionary->HasTransactions()) {  // new style dictionary
-        for (const auto& tt : *(dictionary->GetTransactionTypes(token.class_id))) {
-          nwt_target->AddToken(Token(token.class_id, token.keyword, tt));
-        }
-      } else {  // old-style dictionary
-        std::stringstream ss;
-        ss << "Dictionary '" << merge_model_args.has_dictionary_name()
-           << "' is old-style one without transaction info. It should be re-gathered";
-        BOOST_THROW_EXCEPTION(InvalidOperation(ss.str()));
-      }
+      nwt_target->AddToken(dictionary->entry(token_index)->token());
     }
   }
 
@@ -1149,21 +1116,22 @@ void MasterComponent::Request(const TransformMasterModelArgs& args, ::artm::Thet
     process_batches_args.set_reuse_theta(config->reuse_theta());
   }
 
-  process_batches_args.mutable_transaction_type()->CopyFrom(config->transaction_type());
+  process_batches_args.mutable_class_id()->CopyFrom(config->class_id());
+  process_batches_args.mutable_class_weight()->CopyFrom(config->class_weight());
+
+  process_batches_args.mutable_transaction_typename()->CopyFrom(config->transaction_typename());
   process_batches_args.mutable_transaction_weight()->CopyFrom(config->transaction_weight());
+
   process_batches_args.set_theta_matrix_type(args.theta_matrix_type());
   if (args.has_predict_class_id()) {
     process_batches_args.set_predict_class_id(args.predict_class_id());
-  }
-  if (args.has_predict_transaction_type()) {
-    process_batches_args.set_predict_transaction_type(args.predict_transaction_type());
   }
 
   FixMessage(&process_batches_args);
 
   BatchManager batch_manager;
   RequestProcessBatchesImpl(process_batches_args, &batch_manager,
-                            /* async =*/ false, /*score_manager =*/ nullptr, result);
+                            /* asynchronous =*/ false, /*score_manager =*/ nullptr, result);
   ValidateProcessedItems("Transform", this);
 }
 
@@ -1294,7 +1262,10 @@ class ArtmExecutor {
       process_batches_args_.set_num_document_passes(master_model_config.num_document_passes());
     }
 
-    process_batches_args_.mutable_transaction_type()->CopyFrom(master_model_config.transaction_type());
+    process_batches_args_.mutable_class_id()->CopyFrom(master_model_config.class_id());
+    process_batches_args_.mutable_class_weight()->CopyFrom(master_model_config.class_weight());
+
+    process_batches_args_.mutable_transaction_typename()->CopyFrom(master_model_config.transaction_typename());
     process_batches_args_.mutable_transaction_weight()->CopyFrom(master_model_config.transaction_weight());
 
     for (const auto& regularizer : master_model_config.regularizer_config()) {
@@ -1410,6 +1381,10 @@ class ArtmExecutor {
     iter->reset();
   }
 
+  ProcessBatchesArgs* mutable_process_batches_args() {
+    return &process_batches_args_;
+  }
+
  private:
   const MasterModelConfig& master_model_config_;
   const std::string& pwt_name_;
@@ -1418,7 +1393,7 @@ class ArtmExecutor {
   MasterComponent* master_component_;
   ProcessBatchesArgs process_batches_args_;
   RegularizeModelArgs regularize_model_args_;
-  std::vector<std::shared_ptr<BatchManager>> async_;
+  std::vector<std::shared_ptr<BatchManager>> asynchronous_;
 
   void ProcessBatches(std::string pwt, std::string nwt, BatchesIterator* iter, ScoreManager* score_manager) {
     process_batches_args_.set_pwt_source_name(pwt);
@@ -1429,7 +1404,7 @@ class ArtmExecutor {
     LOG(INFO) << DescribeMessage(process_batches_args_);
     master_component_->RequestProcessBatchesImpl(process_batches_args_,
                                                  &batch_manager,
-                                                 /* async =*/ false,
+                                                 /* asynchronous =*/ false,
                                                  /* score_manager =*/ score_manager,
                                                  /* theta_matrix*/ nullptr);
     process_batches_args_.clear_batch_filename();
@@ -1441,12 +1416,12 @@ class ArtmExecutor {
     process_batches_args_.set_theta_matrix_type(ThetaMatrixType_None);
     iter->move(&process_batches_args_);
 
-    int operation_id = static_cast<int>(async_.size());
-    async_.push_back(std::make_shared<BatchManager>());
+    int operation_id = static_cast<int>(asynchronous_.size());
+    asynchronous_.push_back(std::make_shared<BatchManager>());
     LOG(INFO) << DescribeMessage(process_batches_args_);
     master_component_->RequestProcessBatchesImpl(process_batches_args_,
-                                                 async_.back().get(),
-                                                 /* async =*/ true,
+                                                 asynchronous_.back().get(),
+                                                 /* asynchronous =*/ true,
                                                  /* score_manager =*/ nullptr,
                                                  /* theta_matrix*/ nullptr);
     process_batches_args_.clear_batch_filename();
@@ -1454,7 +1429,7 @@ class ArtmExecutor {
   }
 
   void Await(int operation_id) {
-    while (!async_[operation_id]->IsEverythingProcessed()) {
+    while (!asynchronous_[operation_id]->IsEverythingProcessed()) {
       boost::this_thread::sleep(boost::posix_time::milliseconds(kIdleLoopFrequency));
     }
   }
@@ -1531,7 +1506,7 @@ void MasterComponent::FitOnline(const FitOnlineMasterModelArgs& args) {
   ArtmExecutor artm_executor(*config, this);
   OnlineBatchesIterator iter(args.batch_filename(), args.batch_weight(), args.update_after(),
                              args.apply_weight(), args.decay_weight());
-  if (args.async()) {
+  if (args.asynchronous()) {
     artm_executor.ExecuteAsyncOnlineAlgorithm(&iter);
   } else {
     artm_executor.ExecuteOnlineAlgorithm(&iter);
@@ -1603,6 +1578,7 @@ void MasterComponent::FitOffline(const FitOfflineMasterModelArgs& args) {
 
   ArtmExecutor artm_executor(*config, this);
   OfflineBatchesIterator iter(args.batch_filename(), args.batch_weight());
+  artm_executor.mutable_process_batches_args()->set_reset_nwt(args.reset_nwt());
   artm_executor.ExecuteOfflineAlgorithm(args.num_collection_passes(), &iter);
 
   ValidateProcessedItems("FitOffline", this);

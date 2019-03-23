@@ -1,4 +1,4 @@
-// Copyright 2017, Additive Regularization of Topic Models.
+// Copyright 2019, Additive Regularization of Topic Models.
 
 #include <vector>
 
@@ -115,7 +115,7 @@ TEST(MasterModel, Basic) {
     for (int pass = 0; pass < 4; pass++) {
       ::artm::FitOnlineMasterModelArgs fit_online_args;
       fit_online_args.mutable_batch_filename()->CopyFrom(fit_offline_args.batch_filename());
-      fit_online_args.set_async(is_async == 1);
+      fit_online_args.set_asynchronous(is_async == 1);
 
       // Populate update_after and apply_weight fields
       int update_after = 0;
@@ -130,7 +130,7 @@ TEST(MasterModel, Basic) {
       artm::PerplexityScore perplexity_score = master_model.GetScoreAs< ::artm::PerplexityScore>(get_score_args);
       ASSERT_APPROX_EQ(perplexity_score.value(), expected[pass]);
 
-      if (!fit_online_args.async()) {
+      if (!fit_online_args.asynchronous()) {
         auto perplexity_scores = master_model.GetScoreArrayAs< ::artm::PerplexityScore>(get_score_array_args);
         ASSERT_EQ(perplexity_scores.size(), (pass + 1) * nBatches / update_every);
 
@@ -274,10 +274,11 @@ void testReshapeTokens(bool with_ptdw, bool opt_for_avx) {
   }
   auto fit_offline_args = api.Initialize(batches, nullptr, nullptr, &small_dict);
 
-  float expected[] = { 17.0148f, 15.3353f, 14.6942f, 14.3854f };
+  float expected[] = { 14.3481f, 11.7418f, 10.8133f, 10.3792f };
   for (int pass = 0; pass < 4; pass++) {
     master_model.FitOfflineModel(fit_offline_args);
     artm::PerplexityScore perplexity_score = master_model.GetScoreAs< ::artm::PerplexityScore>(get_score_args);
+    // ToDo: uncommenting this check makes tests crash, it needs to be investigated
     // ASSERT_APPROX_EQ(perplexity_score.value(), expected[pass]);
   }
 

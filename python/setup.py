@@ -134,11 +134,12 @@ class BinaryDistribution(Distribution):
 
 setup_kwargs = dict(
     name='bigartm',
-    version='0.9.0',
+    version='0.10.0',
     packages=find_packages(),
     install_requires=[
         'pandas',
-        'numpy'
+        'numpy',
+        'packaging',
     ],
     # this option must solve problem with installing
     # numpy as dependency during `setup.py install` execution
